@@ -15,3 +15,5 @@ results/*.pth
 
 # OS files
 .DS_Store
+
+test_smoke.py
