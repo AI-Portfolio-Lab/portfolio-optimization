@@ -91,7 +91,7 @@ PRICE_COLS = ['close']
 FEATURE_COLS = TECHNICAL_COLS + FUNDAMENTAL_COLS + PRICE_COLS + FACTOR_COLS
 
 
-def prepare_data(parquet_path='../data/stock_data.parquet'):
+def prepare_data(parquet_path='../data/stock_data.parquet', use_factors=True):
     df = pd.read_parquet(parquet_path)
     print(f"Loaded {len(df)} rows, {df['ticker'].nunique()} stocks")
     print(f"Date range: {df['date'].min()} to {df['date'].max()}")
@@ -133,9 +133,13 @@ def prepare_data(parquet_path='../data/stock_data.parquet'):
         split[BASE_FEATURE_COLS] = (split[BASE_FEATURE_COLS] - train_mean) / train_std
 
 
-    df_train = add_factor_ranks(df_train)
-    df_val   = add_factor_ranks(df_val)
-    df_test  = add_factor_ranks(df_test)
+    if use_factors:
+        df_train = add_factor_ranks(df_train)
+        df_val   = add_factor_ranks(df_val)
+        df_test  = add_factor_ranks(df_test)
+        feature_cols = FEATURE_COLS 
+    else:
+        feature_cols = TECHNICAL_COLS + FUNDAMENTAL_COLS + PRICE_COLS
 
     # paper eq. 3: cash reward = cross-sectional mean return
     for split in [df_train, df_val, df_test]:
@@ -144,7 +148,7 @@ def prepare_data(parquet_path='../data/stock_data.parquet'):
     _, df_train, df_val, df_test, regime_weights = prepare_regimes(df_train, df_val, df_test)
 
     print(f"State dim: {len(FEATURE_COLS)} features + 1 dummy = {len(FEATURE_COLS)+1}")
-    return df_train, df_val, df_test, FEATURE_COLS, regime_weights
+    return df_train, df_val, df_test, feature_cols, regime_weights
 
 
 def train_agent(
@@ -416,7 +420,7 @@ def plot_results(agent_d, bh_d, mom_d, rev_d, dates, tc_label):
     ax.tick_params(axis='x', rotation=45)
     ax.xaxis.set_major_locator(plt.MaxNLocator(12))
     fig.tight_layout()
-    fig.savefig(f'../results/poc_v2_{tc_label}.png', dpi=150)
+    fig.savefig(f'../results/{tc_label}.png', dpi=150)
     plt.show()
     print(f"Agent CR:     {a_cum[-1]:+.2%}")
     print(f"Buy&Hold CR:  {b_cum[-1]:+.2%}")
@@ -430,61 +434,56 @@ if __name__ == '__main__':
     print("PoC v2: Paper-Faithful DQN (Small Scale)")
     print("=" * 55)
 
-    df_train, df_val, df_test, fcols, regime_weights = prepare_data()
-
     TC = 0.0005
-    HIDDEN_DIMS = [32, 64, 128]  # paper: ensemble of 3
-    ensemble = []
+    HIDDEN_DIMS = [32, 64, 128]
+    DATA_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'stock_data.parquet')
 
-    for reward_fn, sharpe_lambda in [("base", 0.1), ("sharpe", 0.1)]:
-        for hdim in HIDDEN_DIMS:
-            print(f"\n{'-'*55}")
-            print(f"Training agent: hidden_dim={hdim}, TC={TC*10000:.0f}bps, 500k steps")
-            print(f"{'-'*55}")
+    for use_factors in [False, True]:
+        factor_label = "factors" if use_factors else "no_factors"
+        print(f"\n{'='*55}")
+        print(f"Run: {factor_label}")
+        print(f"{'='*55}")
 
-            net, _ = train_agent(
-                df_train, df_val, fcols,
-                transaction_cost=TC,
-                n_steps=500_000,
-                hidden_dim=hdim,
-                reward_fn=reward_fn,
-                sharpe_lambda=sharpe_lambda,
-                regime_weights=regime_weights,
-            )
-            ensemble.append(net)
+        df_train, df_val, df_test, fcols, regime_weights = prepare_data(
+            parquet_path=DATA_PATH, use_factors=use_factors
+        )
 
-            os.makedirs('../results', exist_ok=True)
-            torch.save(net.state_dict(), f'../results/v2_qnet_{hdim}_5bps.pt')
+        for reward_fn, sharpe_lambda in [("base", 0.1), ("sharpe", 0.1), ("sharpe+regime", 0.1)]:
+            ensemble = []
+            for hdim in HIDDEN_DIMS:
+                print(f"\n{'-'*55}")
+                print(f"Training: {factor_label} | {reward_fn} | hidden_dim={hdim}")
+                print(f"{'-'*55}")
 
-    # Evaluate ensemble with diagnostics
-    print(f"\n{'='*55}")
-    print("Ensemble evaluation (majority vote, 3 agents)")
-    print(f"{'='*55}")
+                net, _ = train_agent(
+                    df_train, df_val, fcols,
+                    transaction_cost=TC,
+                    n_steps=500_000,
+                    hidden_dim=hdim,
+                    reward_fn=reward_fn,
+                    sharpe_lambda=sharpe_lambda,
+                    regime_weights=regime_weights,
+                )
+                ensemble.append(net)
 
-    a_d, bh_d, dates, diag = evaluate_portfolio(df_test, ensemble, fcols, tc=TC)
+                os.makedirs('../results', exist_ok=True)
+                torch.save(net.state_dict(), f'../results/qnet_{factor_label}_{reward_fn}_{hdim}.pt')
 
-    metrics = [
-        compute_metrics(a_d, bh_d, mom_d, rev_d, label="DQN Agent"),
-        compute_metrics(bh_d, label="Buy & Hold"),
-        compute_metrics(mom_d, label="Momentum"),
-        compute_metrics(rev_d, label="Reversion"),
-    ]
-    print_metrics_table(metrics)
+            # evaluate this config
+            a_d, bh_d, dates, diag = evaluate_portfolio(df_test, ensemble, fcols, tc=TC)
+            mom_d, rev_d = compute_benchmarks(df_test, tc=TC)
 
-    mom_d, rev_d = compute_benchmarks(df_test, tc=TC)
-    plot_results(a_d, bh_d, mom_d, rev_d, dates, '5bps')
+            print(f"\nResults: {factor_label} | {reward_fn}")
+            metrics = [
+                compute_metrics(a_d, bh_d=bh_d, mom_d=mom_d, rev_d=rev_d, label="DQN Agent"),
+                compute_metrics(bh_d, label="Buy & Hold"),
+                compute_metrics(mom_d, label="Momentum"),
+                compute_metrics(rev_d, label="Reversion"),
+            ]
+            print_metrics_table(metrics)
+            plot_results(a_d, bh_d, mom_d, rev_d, dates, f'{factor_label}_{reward_fn}')
 
-    # diagnostics
-    print(f"\nPortfolio diagnostics (test period):")
-    print(f"  Avg stocks picked per day: {np.mean(diag['n_invested']):.1f} / {np.mean(diag['n_total']):.1f}")
-    print(f"  Min/Max picked: {np.min(diag['n_invested'])} / {np.max(diag['n_invested'])}")
-    print(f"  Days with 0 picks (all cash): {sum(1 for n in diag['n_invested'] if n == 0)}")
-    print(f"  Days with <5 picks: {sum(1 for n in diag['n_invested'] if 0 < n < 5)}")
-
-    # Individual agent results
-    print("\nIndividual agent results:")
-    for hdim, net in zip(HIDDEN_DIMS, ensemble):
-        ind_d, _, _, ind_diag = evaluate_portfolio(df_test, net, fcols, tc=TC)
-        cr = np.cumprod(1 + ind_d)[-1] - 1
-        avg_pick = np.mean(ind_diag['n_invested'])
-        print(f"  hdim={hdim:>3d}: CR={cr:+.2%}, avg picks/day={avg_pick:.1f}")
+            print(f"\nPortfolio diagnostics:")
+            print(f"  Avg stocks picked: {np.mean(diag['n_invested']):.1f} / {np.mean(diag['n_total']):.1f}")
+            print(f"  Days with 0 picks: {sum(1 for n in diag['n_invested'] if n == 0)}")
+            print(f"  Days with <5 picks: {sum(1 for n in diag['n_invested'] if 0 < n < 5)}")
