@@ -1,112 +1,77 @@
-# Presentation Script: Portfolio Optimization with Deep Reinforcement Learning
-
-Video presentation, **6 minutes max**. Each section is what the presenter says, with visuals noted in *italics*. No low-level code, hyperparameters, or implementation details.
-
-**Presenters:**
-1. Aryan Kalaskar: Motivation and problem setup
-2. Manuel Torres: Key methods summary
-3. Crosby Sayan: Demo
-4. Andres Cruz: Results, takeaways, and conclusion
+# Portfolio Optimization with Deep Reinforcement Learning
 
 ---
 
-## Part 1, Aryan Kalaskar: Motivation and Problem Setup *(~1 min)*
+## Part 1 — Crosby: Motivation & Problem Setup (~1 min)
+*Slide: title slide*
 
-*Slide: title slide with the four authors and project title.*
+Every trading day, for every stock in a portfolio, a fund manager faces the same question: **invest or hold cash?** We built a reinforcement learning agent that learns to answer that question from data.
 
-Hi everyone, I'm Aryan, and together with Manuel, Crosby, and Andres, we built a **Portfolio Optimization system using Deep Reinforcement Learning**.
+Our baseline is a 2021 paper by Pigorsch and Schäfer. They showed a Deep Q-Network could trade a large cross-section of stocks by treating each asset as its own sequential decision problem. The reward signal is clever: holding cash isn't free — the agent receives the average return across all stocks in the universe when it sits out, essentially what a passive investor would earn — so missing a rally has real cost.
 
-*Slide: problem statement, "Every day, for every stock: hold cash or invest?"*
-
-The question we set out to answer is simple: **can a reinforcement learning agent learn to trade a basket of stocks better than standard benchmarks**, like buying and holding the market, or following simple momentum and mean-reversion rules?
-
-The setup works like this. Every trading day, our agent looks at each stock in the universe, its moving averages, volatility, fundamentals, and makes a binary decision: **invest or hold cash**. We equal-weight whatever it selects, charge transaction costs, and track performance over time.
-
-Our starting point is a 2021 paper by Pigorsch and Schäfer on Deep Q-Networks for stock trading. We reproduced their approach, then extended it in three ways: a **Sharpe-ratio-aware reward** to penalize volatility, a **Hidden Markov Model** for market-regime awareness, and **Fama-French-style factor features** for cross-sectional information.
-
-I'll hand it to Manuel to walk through the methods.
+We trained and tested on US equity data from WRDS, a standard academic data source, covering over 3,000 stocks from 2010 to 2021. We reproduced the paper's approach on a 50-stock subset, then asked: what happens when you make the agent risk-aware, market-regime-aware, and factor-aware? Those three extensions are the contribution of this project.
 
 ---
 
-## Part 2, Manuel Torres: Key Methods Summary *(~1 min)*
+## Part 2 — Aryan: Methods (~1 min)
+*Slide: architecture diagram — Data → Environment → DQN → Portfolio*
 
-*Slide: high-level architecture diagram showing Data, Environment, DQN Agent, Portfolio.*
+The environment is a per-asset MDP. Each episode is one stock's price history. The agent sees a 33-dimensional state vector — a snapshot of everything relevant about a stock on a given day: 17 price-based signals like moving averages and volatility measures, 10 company fundamentals like profit margins and debt ratios, the stock's current price, whether the agent already holds it, and a market regime label. It outputs one of two actions: invest or cash.
 
-Thanks, Aryan. I'm Manuel. Let me give you the high-level picture of how this works.
+We chose DQN specifically because financial markets are partially observable, which mirrors the setting DQN was originally designed for. The agent is a two-hidden-layer neural network. We train three networks and combine them with majority vote — a stock enters the portfolio only if at least two of three networks agree. We train for 500,000 steps per agent, saving the best model by validation performance.
 
-**The environment** follows a per-asset MDP formulation from the paper. Each stock is its own episode. The agent sees a feature vector, technical indicators, fundamentals, and optionally factor ranks and a market regime label, and picks one of two actions: invest or cash. The key design choice is that holding cash isn't free: the agent receives the market average return as a cash reward, so sitting out a rally has real opportunity cost.
+*Slide: three extensions — Sharpe reward / HMM / factors*
 
-*Slide: diagram showing DQN with ensemble voting, three networks, majority vote.*
+The three extensions stack on top of each other. The **Sharpe reward** adds a rolling risk-adjustment term — it penalizes the agent for taking volatile positions, not just chasing raw returns. The **HMM** — implemented from scratch in PyTorch using the forward-backward algorithm and EM — learned three market regimes purely from price behavior, no hand-labeling required, with Viterbi decoding for inference. The **factor model** adds cross-sectional rank features inspired by academic finance research — specifically, where each stock ranks relative to its peers on size, valuation, and recent volatility. These are signals historically associated with return differences across stocks.
 
-**The agent** is a Deep Q-Network, a neural network that estimates the value of each action. We train three networks at different capacities, then combine them with **majority voting**: a stock only enters the portfolio if at least two of three networks agree. This ensemble approach adds robustness.
-
-*Slide: three extensions listed: Sharpe reward, HMM regimes, factor features.*
-
-Beyond the base paper, our **Sharpe reward** variant encourages risk-adjusted returns, the **HMM** identifies bull, bear, and high-volatility market states to condition the agent's behavior, and the **factor features** give the agent cross-sectional information about size, value, momentum, and quality.
-
-Now Crosby will show you what this looks like in practice.
+A few explicit assumptions: we trade 50 stocks rather than the full market, transaction costs are a fixed percentage with no slippage, and all models are trained on pre-2019 data and evaluated strictly out-of-sample on 2020–2021 — so the agent never sees the test period during training.
 
 ---
 
-## Part 3, Crosby Sayan: Demo *(~2 min)*
+## Part 3 — Andres: Demo (~2 min)
+*Screen: Streamlit app, base config loaded*
 
-*Screen: show the system running, walking through inputs and outputs, not code.*
+This is the agent running live on the test set — January 2020 through June 2021 — using the actual trained model weights.
 
-Thanks, Manuel. I'm Crosby, and I'm going to show you the end product.
+*Switch to Sharpe config, drag slider to day 1*
 
-*Screen: show the data pipeline output, the 50-stock universe with feature summary.*
+Each day, the ensemble votes on every stock. The table shows which stocks were selected and their individual returns. The regime indicator shows the HMM's current market state.
 
-Here's our stock universe, 50 stocks selected for cap diversity: large-caps, small-caps, and mid-caps. For each stock on each day, the system computes a feature vector from raw market data, things like moving averages, volatility measures, and fundamentals.
+*Drag slider slowly through March 2020*
 
-*Screen: show HMM regime visualization over the full time period.*
+Watch March 2020. The regime shifts to Crisis. The agent's selections change and the cumulative return takes a hit — but it recovers faster than buy-and-hold, and far faster than momentum which collapsed permanently.
 
-This is our Hidden Markov Model's view of the market. You can see it identifying three distinct regimes: a calm state, a high-volatility state, and a bear state. Notice how cleanly it picks up the COVID crash in early 2020 as a regime shift.
+*Switch back to base config at the same date*
 
-*Screen: show the agent's daily portfolio selection, which stocks are in, which are out.*
+Compare this to the base agent at the same moment — same crash, but the Sharpe-reward agent holds up better because it learned to avoid concentrated volatile positions. That difference in behavior during the crash is what drives the gap in final returns.
 
-Here's the agent in action on the test set. Each day, the three ensemble networks vote on every stock. Green means at least two networks agreed to invest, gray means cash. You can see the agent dynamically rotating in and out of positions based on market conditions.
+*Drag to end, Sharpe config*
 
-*Screen: show equity curves, the agent's portfolio value over time vs benchmarks.*
-
-And here's the bottom line: the portfolio equity curve. The blue line is our best agent, the Sharpe-reward variant. You can see it tracking the benchmarks early on, then pulling decisively ahead during the COVID recovery. The key thing to notice is not just the higher return, but the **shallower drawdown** during the crash, the agent learned to reduce exposure when conditions deteriorated.
-
-Over to Andres for the full results.
+By end of period the Sharpe agent is at +303% versus +114% for buy-and-hold.
 
 ---
 
-## Part 4, Andres Cruz: Results, Takeaways, and Conclusion *(~2 min)*
+## Part 4 — Manuel: Results, Takeaways, Conclusion (~2 min)
+*Slide: metrics table*
 
-*Slide: results summary table, cumulative return, Sharpe, max drawdown, win rate.*
+Here are the numbers across all configurations on the test set.
 
-Thanks, Crosby. I'm Andres. Let me put numbers to what you just saw.
+| Strategy | Cum. Return | Sharpe | Max DD |
+|---|---|---|---|
+| Buy & Hold | +114% | 1.65 | -31.6% |
+| Momentum | -21% | -0.21 | -62.5% |
+| Reversion | +141% | 1.60 | -29.5% |
+| DQN Base | +189% | 1.52 | -28.8% |
+| DQN Sharpe | **+303%** | **2.27** | **-21.4%** |
+| DQN Sharpe+Regime | +296% | 1.53 | -37.1% |
+| DQN Factors | +225% | 1.87 | -21.4% |
 
-Our test window starts January 2020, right into the COVID crash and recovery. **Buy and hold** returned about +114% with a max drawdown of -32%. **Momentum lost money** at -21%. **Mean reversion** did well at +141%.
+The Sharpe reward was the single biggest improvement — 189% to 303%, Sharpe ratio up from 1.52 to 2.27, max drawdown reduced from -28% to -21%. The agent learned not just to chase returns, but to avoid volatile positions.
 
-Our best agent, the **Sharpe-reward DQN**, returned **+303%**, with a Sharpe ratio of **2.27** and a max drawdown of only **-21%**. That's roughly 2.7 times buy-and-hold's return with a shallower drawdown.
+*Slide: extension findings*
 
-*Slide: comparison chart, bar chart of cumulative returns across all strategies.*
+The regime and factor extensions tell an interesting story. They did not improve cumulative return further, but they changed how the agent behaves. The regime agent selected nearly twice as many stocks per day on average — 16.8 versus 7.7 — meaning it built more diversified portfolios. The factor agent achieved a Sharpe ratio of 1.87, between base and Sharpe-only, suggesting the additional cross-sectional information helped risk management even when it didn't boost raw return. These extensions are doing something real — they just optimize for different things than peak return.
 
-So the DQN clearly outperformed the benchmarks on this test window, and the Sharpe-aware reward was the key differentiator.
+*Slide: takeaway*
 
-*Slide: honest findings, extensions underperformed.*
-
-Now, an honest finding: we expected the HMM regime and factor extensions to improve things further, but they actually **underperformed the pure Sharpe agent** on this window. We believe this is because the COVID regime shift was too abrupt for the HMM to label cleanly out-of-sample, and adding more input features without proportionally more training data hurt sample efficiency.
-
-*Slide: key assumptions and limitations.*
-
-To be transparent about limitations: we tested on a single crisis window, used a simplified transaction cost model without slippage, and trained on a 50-stock subset rather than the full market. These are deliberate proof-of-concept choices, not claims of production readiness.
-
-*Slide: clear takeaway, centered and bold.*
-
-**Our takeaway: a straightforward DQN with a Sharpe-aware reward beat all benchmarks through the most volatile market in a decade, on a risk-adjusted basis. The extensions we hoped would help revealed that more information doesn't automatically mean better decisions, and understanding that tradeoff is the next step.**
-
-Thank you, we're happy to take questions.
-
----
-
-## Timing Notes
-
-- **Total target: ≤ 6 minutes.** Aim for 5:30 to leave margin.
-- If running long, Crosby can trim the HMM regime visual walkthrough.
-- Visuals should do the heavy lifting: charts, equity curves, and tables, not text-heavy slides.
-- No code on screen, only the end-product and results.
+**The takeaway: a DQN with a Sharpe-aware reward beat every benchmark through the most volatile market in a decade, on both return and risk. The extensions revealed that smarter information doesn't always mean higher returns — sometimes it means better-constructed portfolios. That distinction matters in practice.**
