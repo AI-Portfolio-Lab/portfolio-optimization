@@ -156,6 +156,45 @@ def compute_metrics(daily_returns, bh_d=None, mom_d=None, rev_d=None, label=""):
         metrics['win_rate_vs_rev'] = np.mean(daily_returns > rev_d)
     return metrics
 
+def compute_turnover(df_test, q_nets, feature_cols, tc=0.0005, min_picks=3):
+    """Compute daily portfolio turnover fraction of holdings that change each day."""
+    if not isinstance(q_nets, list):
+        q_nets = [q_nets]
+
+    dates = sorted(df_test['date'].unique())
+    prev_inv = set()
+    daily_turnover = []
+
+    for date in dates:
+        dd = df_test[df_test['date'] == date]
+        if len(dd) == 0:
+            continue
+        inv = []
+        for _, row in dd.iterrows():
+            feat = row[feature_cols].values.astype(float)
+            pos = 1 if row['ticker'] in prev_inv else 0
+            regime = row['regime']
+            st_t = torch.FloatTensor(np.append(feat, [pos, regime])).unsqueeze(0)
+            with torch.no_grad():
+                votes = sum(n(st_t).argmax(1).item() for n in q_nets)
+            if votes > len(q_nets) / 2:
+                inv.append(row['ticker'])
+
+        current = set(inv) if len(inv) >= min_picks else set()
+        if prev_inv or current:
+            entered = len(current - prev_inv)
+            exited = len(prev_inv - current)
+            total = max(len(prev_inv | current), 1)
+            daily_turnover.append((entered + exited) / total)
+        else:
+            daily_turnover.append(0.0)
+        prev_inv = current
+
+    return {
+        'mean_daily_turnover': np.mean(daily_turnover),
+        'max_daily_turnover': np.max(daily_turnover),
+        'total_rebalances': sum(1 for t in daily_turnover if t > 0),
+    }
 
 def print_metrics_table(metrics_list):
     print(f"\n{'Strategy':<20} {'Cum. Return':>12} {'Sharpe':>8} {'Max DD':>10} {'WR vs BH':>10} {'WR vs Mom':>10} {'WR vs Rev':>10}")
